@@ -2,7 +2,6 @@ import { Tool } from "./base.js";
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36";
-const MAX_REDIRECTS = 5;
 
 /** Strip HTML tags and decode entities. */
 function stripTags(text: string): string {

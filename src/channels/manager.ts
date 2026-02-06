@@ -1,3 +1,6 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 import type { OutboundMessage } from "../bus/events.js";
 import type { MessageBus } from "../bus/queue.js";
 import type { BaseChannel } from "./base.js";
@@ -11,26 +14,25 @@ export class ChannelManager {
   private bus: MessageBus;
   readonly channels = new Map<string, BaseChannel>();
   private dispatchAbort: AbortController | null = null;
+  private knownChatsPath: string;
+  private chatIdSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: Config, bus: MessageBus) {
     this.config = config;
     this.bus = bus;
-    this.initChannels();
+    this.knownChatsPath = join(homedir(), ".nanobot", "known_chats.json");
   }
 
-  private initChannels(): void {
+  private async initChannels(): Promise<void> {
     // Telegram channel
     if (this.config.channels.telegram.enabled) {
       try {
-        // Dynamic import to avoid pulling grammy if not needed
-        const { TelegramChannel } = require("./telegram.js") as {
-          TelegramChannel: typeof import("./telegram.js").TelegramChannel;
-        };
+        const { TelegramChannel } = await import("./telegram.js");
         const channel = new TelegramChannel(
           this.config.channels.telegram,
           this.bus,
-          this.config.providers.groq.apiKey,
         );
+        channel.onNewChatId = () => this.scheduleSave();
         this.channels.set("telegram", channel);
         console.log("Telegram channel enabled");
       } catch (err) {
@@ -39,8 +41,58 @@ export class ChannelManager {
     }
   }
 
-  /** Start all channels and the outbound dispatcher. */
+  /** Load persisted known chat IDs into channels. */
+  private loadKnownChatIds(): void {
+    if (!existsSync(this.knownChatsPath)) return;
+    try {
+      const raw = readFileSync(this.knownChatsPath, "utf-8");
+      const data = JSON.parse(raw) as Record<string, string[]>;
+      for (const [channelName, chatIds] of Object.entries(data)) {
+        const channel = this.channels.get(channelName);
+        if (channel) {
+          for (const id of chatIds) channel.knownChatIds.add(id);
+        }
+      }
+    } catch {
+      // ignore corrupt file
+    }
+  }
+
+  /** Save known chat IDs to disk. */
+  private saveKnownChatIds(): void {
+    const data: Record<string, string[]> = {};
+    for (const [name, channel] of this.channels) {
+      if (channel.knownChatIds.size > 0) {
+        data[name] = Array.from(channel.knownChatIds);
+      }
+    }
+    const dir = dirname(this.knownChatsPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(this.knownChatsPath, JSON.stringify(data, null, 2));
+  }
+
+  /** Debounced save — called when new chat IDs are discovered. */
+  scheduleSave(): void {
+    if (this.chatIdSaveTimer) return;
+    this.chatIdSaveTimer = setTimeout(() => {
+      this.chatIdSaveTimer = null;
+      this.saveKnownChatIds();
+    }, 5000);
+  }
+
+  /** Initialize channel instances (non-blocking). Call before startAll(). */
+  async init(): Promise<void> {
+    await this.initChannels();
+    this.loadKnownChatIds();
+  }
+
+  /** Start all channels and the outbound dispatcher (blocks until stopped). */
   async startAll(): Promise<void> {
+    // Init if not already done
+    if (this.channels.size === 0) {
+      await this.initChannels();
+    }
+
     if (this.channels.size === 0) {
       console.warn("No channels enabled");
       return;
@@ -64,6 +116,13 @@ export class ChannelManager {
   async stopAll(): Promise<void> {
     console.log("Stopping all channels...");
 
+    if (this.chatIdSaveTimer) {
+      clearTimeout(this.chatIdSaveTimer);
+      this.chatIdSaveTimer = null;
+    }
+    // Final save of known chat IDs
+    this.saveKnownChatIds();
+
     if (this.dispatchAbort) {
       this.dispatchAbort.abort();
       this.dispatchAbort = null;
@@ -84,7 +143,7 @@ export class ChannelManager {
 
     while (!signal.aborted) {
       try {
-        const msg = await withTimeout(this.bus.consumeOutbound(), 1000);
+        const msg = await this.bus.consumeOutboundTimeout(1000);
         const channel = this.channels.get(msg.channel);
         if (channel) {
           try {
@@ -116,20 +175,12 @@ export class ChannelManager {
   get enabledChannels(): string[] {
     return Array.from(this.channels.keys());
   }
+
+  /** Get known chat IDs for a channel (chats that have sent at least one message). */
+  getKnownChatIds(channelName: string): string[] {
+    const channel = this.channels.get(channelName);
+    if (!channel) return [];
+    return Array.from(channel.knownChatIds);
+  }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timeout")), ms);
-    promise.then(
-      (val) => {
-        clearTimeout(timer);
-        resolve(val);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-}

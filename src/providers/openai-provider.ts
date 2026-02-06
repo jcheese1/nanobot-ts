@@ -37,13 +37,14 @@ export class OpenAIProvider implements LLMProvider {
     messages: ChatMessage[];
     tools?: ToolDefinition[];
     model?: string;
+    maxTokens?: number;
   }): Promise<LLMResponse> {
     const model = params.model ?? this.defaultModel;
 
     const requestParams: OpenAI.ChatCompletionCreateParams = {
       model,
       messages: params.messages as OpenAI.ChatCompletionMessageParam[],
-      max_tokens: 8192,
+      max_tokens: params.maxTokens ?? 8192,
     };
 
     if (params.tools && params.tools.length > 0) {

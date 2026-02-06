@@ -79,7 +79,7 @@ export class WriteFileTool extends Tool {
 export class EditFileTool extends Tool {
   readonly name = "edit_file";
   readonly description =
-    "Edit a file by replacing occurrences of old_text with new_text.";
+    "Edit a file by replacing the first occurrence of old_text with new_text. Provide enough context in old_text to uniquely identify the target.";
   readonly parameters = {
     type: "object",
     properties: {

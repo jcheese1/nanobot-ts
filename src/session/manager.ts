@@ -8,8 +8,9 @@ import {
 import { join } from "node:path";
 import { ensureDir, safeFilename } from "../utils/helpers.js";
 import { homedir } from "node:os";
+import type { ChatMessage } from "../providers/base.js";
 
-/** A conversation message. */
+/** A conversation message (legacy simple format, kept for JSONL compat). */
 export interface SessionMessage {
   role: string;
   content: string;
@@ -20,48 +21,52 @@ export interface SessionMessage {
 /** A conversation session. */
 export class Session {
   key: string;
-  messages: SessionMessage[];
+  /** Rich message history preserving tool_calls, tool results, etc. */
+  history: ChatMessage[];
   createdAt: Date;
   updatedAt: Date;
   metadata: Record<string, unknown>;
 
   constructor(params: {
     key: string;
-    messages?: SessionMessage[];
+    history?: ChatMessage[];
     createdAt?: Date;
     updatedAt?: Date;
     metadata?: Record<string, unknown>;
   }) {
     this.key = params.key;
-    this.messages = params.messages ?? [];
+    this.history = params.history ?? [];
     this.createdAt = params.createdAt ?? new Date();
     this.updatedAt = params.updatedAt ?? new Date();
     this.metadata = params.metadata ?? {};
   }
 
-  /** Add a message to the session. */
-  addMessage(role: string, content: string, extra?: Record<string, unknown>): void {
-    this.messages.push({
-      role,
-      content,
-      timestamp: new Date().toISOString(),
-      ...extra,
-    });
+  /** Append full ChatMessage entries from an agent loop turn (excluding system prompt). */
+  addTurnMessages(messages: ChatMessage[]): void {
+    for (const msg of messages) {
+      // Skip system messages — those are rebuilt each turn
+      if (msg.role === "system") continue;
+      this.history.push(msg);
+    }
     this.updatedAt = new Date();
   }
 
-  /** Get message history for LLM context. */
-  getHistory(maxMessages = 50): Array<{ role: string; content: string }> {
-    const recent =
-      this.messages.length > maxMessages
-        ? this.messages.slice(-maxMessages)
-        : this.messages;
-    return recent.map((m) => ({ role: m.role, content: m.content }));
+  /** Get the full rich history for replaying into the LLM. */
+  getHistory(maxMessages = 200): ChatMessage[] {
+    if (this.history.length <= maxMessages) return this.history;
+    // Trim from the front, but be careful not to cut in the middle of a
+    // tool-call / tool-result pair.  Simple approach: walk forward from the
+    // trim point until we land on a 'user' message.
+    let start = this.history.length - maxMessages;
+    while (start < this.history.length && this.history[start].role !== "user") {
+      start++;
+    }
+    return this.history.slice(start);
   }
 
   /** Clear all messages. */
   clear(): void {
-    this.messages = [];
+    this.history = [];
     this.updatedAt = new Date();
   }
 }
@@ -71,7 +76,7 @@ export class SessionManager {
   private sessionsDir: string;
   private cache = new Map<string, Session>();
 
-  constructor(workspace: string) {
+  constructor(_workspace: string) {
     this.sessionsDir = ensureDir(join(homedir(), ".nanobot", "sessions"));
   }
 
@@ -103,9 +108,10 @@ export class SessionManager {
     try {
       const raw = readFileSync(path, "utf-8");
       const lines = raw.split("\n").filter((l) => l.trim());
-      const messages: SessionMessage[] = [];
+      const history: ChatMessage[] = [];
       let metadata: Record<string, unknown> = {};
       let createdAt: Date | undefined;
+      let isRichFormat = false;
 
       for (const line of lines) {
         const data = JSON.parse(line);
@@ -114,14 +120,23 @@ export class SessionManager {
           createdAt = data.created_at
             ? new Date(data.created_at)
             : undefined;
+          isRichFormat = data._format === "rich";
+        } else if (isRichFormat) {
+          // Rich format: data is a full ChatMessage
+          history.push(data as ChatMessage);
         } else {
-          messages.push(data as SessionMessage);
+          // Legacy format: simple {role, content, timestamp} entries.
+          // Convert to ChatMessage, skipping the timestamp field.
+          history.push({
+            role: data.role as ChatMessage["role"],
+            content: data.content ?? "",
+          });
         }
       }
 
       return new Session({
         key,
-        messages,
+        history,
         createdAt: createdAt ?? new Date(),
         metadata,
       });
@@ -136,18 +151,19 @@ export class SessionManager {
     const path = this.getSessionPath(session.key);
     const lines: string[] = [];
 
-    // Metadata line first
+    // Metadata line first (mark as rich format)
     lines.push(
       JSON.stringify({
         _type: "metadata",
+        _format: "rich",
         created_at: session.createdAt.toISOString(),
         updated_at: session.updatedAt.toISOString(),
         metadata: session.metadata,
       }),
     );
 
-    // Message lines
-    for (const msg of session.messages) {
+    // Message lines — full ChatMessage objects
+    for (const msg of session.history) {
       lines.push(JSON.stringify(msg));
     }
 

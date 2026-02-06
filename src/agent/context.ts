@@ -109,7 +109,7 @@ When remembering something, write to ${this.workspace}/memory/MEMORY.md`;
 
   /** Build the complete message list for an LLM call. */
   buildMessages(params: {
-    history: Array<{ role: string; content: string }>;
+    history: ChatMessage[];
     currentMessage: string;
     media?: string[];
     channel?: string;
@@ -124,12 +124,9 @@ When remembering something, write to ${this.workspace}/memory/MEMORY.md`;
     }
     messages.push({ role: "system", content: systemPrompt });
 
-    // History
+    // History — replay full rich messages (user, assistant w/ tool_calls, tool results, etc.)
     for (const msg of params.history) {
-      messages.push({
-        role: msg.role as "user" | "assistant",
-        content: msg.content,
-      });
+      messages.push(msg);
     }
 
     // Current message (with optional image attachments)

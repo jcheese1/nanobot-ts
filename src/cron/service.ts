@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import cronParser from "cron-parser";
 import type {
   CronJob,
   CronSchedule,
@@ -31,9 +32,7 @@ function computeNextRun(
 
   if (schedule.kind === "cron" && schedule.expr) {
     try {
-      // Dynamic import for cron-parser
-      const { parseExpression } = require("cron-parser") as typeof import("cron-parser");
-      const interval = parseExpression(schedule.expr);
+      const interval = cronParser.parseExpression(schedule.expr);
       const next = interval.next();
       return next.getTime();
     } catch {

@@ -4,7 +4,7 @@
  */
 
 import { Command } from "commander";
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { VERSION, LOGO } from "../index.js";
 import { loadConfig, saveConfig } from "../config/loader.js";
@@ -16,6 +16,7 @@ import {
   getApiBase,
 } from "../config/schema.js";
 import type { Config } from "../config/schema.js";
+import { GatewayServer } from "../gateway/server.js";
 
 const program = new Command();
 
@@ -143,6 +144,165 @@ This file stores important information that should persist across sessions.
 }
 
 // ============================================================================
+// Config Export / Import
+// ============================================================================
+
+/** Shape of the portable config bundle. */
+interface ConfigBundle {
+  _nanobot: string;
+  version: string;
+  exportedAt: string;
+  config: unknown;
+  cronJobs: unknown | null;
+  knownChats: unknown | null;
+  workspace: Record<string, string>;
+}
+
+const configCmd = program
+  .command("config")
+  .description("Manage nanobot configuration");
+
+configCmd
+  .command("export")
+  .description("Export config, cron jobs, known chats, and workspace files to a portable JSON bundle")
+  .option("-o, --output <path>", "Write to file instead of stdout")
+  .action((opts) => {
+    const dataDir = getDataDir();
+    const config = loadConfig();
+    const workspace = getConfigWorkspacePath(config);
+
+    // Read optional data files
+    const readJsonSafe = (p: string): unknown | null => {
+      try { return JSON.parse(readFileSync(p, "utf-8")); } catch { return null; }
+    };
+    const readTextSafe = (p: string): string | null => {
+      try { return readFileSync(p, "utf-8"); } catch { return null; }
+    };
+
+    // Gather workspace files
+    const wsFiles: Record<string, string> = {};
+    const workspaceEntries = [
+      "AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md",
+      "memory/MEMORY.md",
+    ];
+    for (const rel of workspaceEntries) {
+      const content = readTextSafe(join(workspace, rel));
+      if (content !== null) wsFiles[rel] = content;
+    }
+
+    // Also grab daily memory notes
+    const memoryDir = join(workspace, "memory");
+    if (existsSync(memoryDir)) {
+      try {
+        for (const f of readdirSync(memoryDir)) {
+          if (f.endsWith(".md") && f !== "MEMORY.md") {
+            const content = readTextSafe(join(memoryDir, f));
+            if (content !== null) wsFiles[`memory/${f}`] = content;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    const bundle: ConfigBundle = {
+      _nanobot: "config-bundle",
+      version: VERSION,
+      exportedAt: new Date().toISOString(),
+      config,
+      cronJobs: readJsonSafe(join(dataDir, "cron", "jobs.json")),
+      knownChats: readJsonSafe(join(dataDir, "known_chats.json")),
+      workspace: wsFiles,
+    };
+
+    const json = JSON.stringify(bundle, null, 2);
+
+    if (opts.output) {
+      const outDir = dirname(opts.output);
+      if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
+      writeFileSync(opts.output, json);
+      console.log(`Exported to ${opts.output}`);
+    } else {
+      process.stdout.write(json + "\n");
+    }
+  });
+
+configCmd
+  .command("import")
+  .description("Import a config bundle (from file or stdin)")
+  .argument("[path]", "Path to bundle JSON file (omit to read from stdin)")
+  .option("--no-workspace", "Skip importing workspace files")
+  .option("--no-cron", "Skip importing cron jobs")
+  .action(async (path: string | undefined, opts: { workspace: boolean; cron: boolean }) => {
+    let raw: string;
+
+    if (path) {
+      if (!existsSync(path)) {
+        console.error(`File not found: ${path}`);
+        process.exit(1);
+      }
+      raw = readFileSync(path, "utf-8");
+    } else {
+      // Read from stdin
+      const chunks: Buffer[] = [];
+      for await (const chunk of process.stdin) {
+        chunks.push(chunk as Buffer);
+      }
+      raw = Buffer.concat(chunks).toString("utf-8");
+    }
+
+    let bundle: ConfigBundle;
+    try {
+      bundle = JSON.parse(raw);
+    } catch {
+      console.error("Error: Invalid JSON");
+      process.exit(1);
+    }
+
+    if (bundle._nanobot !== "config-bundle") {
+      console.error("Error: Not a nanobot config bundle");
+      process.exit(1);
+    }
+
+    const dataDir = getDataDir();
+
+    // 1. Restore config
+    if (bundle.config) {
+      const config = ConfigSchema.parse(bundle.config);
+      saveConfig(config);
+      console.log("  Restored config.json");
+    }
+
+    // 2. Restore cron jobs
+    if (opts.cron && bundle.cronJobs) {
+      const cronDir = join(dataDir, "cron");
+      if (!existsSync(cronDir)) mkdirSync(cronDir, { recursive: true });
+      writeFileSync(join(cronDir, "jobs.json"), JSON.stringify(bundle.cronJobs, null, 2));
+      console.log("  Restored cron/jobs.json");
+    }
+
+    // 3. Restore known chats
+    if (bundle.knownChats) {
+      writeFileSync(join(dataDir, "known_chats.json"), JSON.stringify(bundle.knownChats, null, 2));
+      console.log("  Restored known_chats.json");
+    }
+
+    // 4. Restore workspace files
+    if (opts.workspace && bundle.workspace) {
+      const config = loadConfig();
+      const workspace = getConfigWorkspacePath(config);
+
+      for (const [rel, content] of Object.entries(bundle.workspace)) {
+        const filePath = join(workspace, rel);
+        const fileDir = dirname(filePath);
+        if (!existsSync(fileDir)) mkdirSync(fileDir, { recursive: true });
+        writeFileSync(filePath, content);
+        console.log(`  Restored ${rel}`);
+      }
+    }
+
+    console.log(`\n${LOGO} Import complete (from ${bundle.exportedAt})`);
+  });
+
+// ============================================================================
 // Gateway / Server
 // ============================================================================
 
@@ -200,33 +360,78 @@ program
       provider,
       workspace,
       model,
+      maxTokens: config.agents.defaults.maxTokens,
       maxIterations: config.agents.defaults.maxToolIterations,
       braveApiKey: config.tools.web.search.apiKey || undefined,
       execConfig: config.tools.exec,
       cronService: cron,
     });
 
-    // Wire cron callback
+    // Create channel manager (before cron so the callback can broadcast)
+    const channels = new ChannelManager(config, bus);
+
+    // Wire cron callback (gateway is assigned after server creation below)
+    let gateway: GatewayServer | null = null;
+
     cron.onJob = async (job) => {
+      const sessionKey = `cron:${job.id}`;
+
+      // Snapshot history length so we can extract only this turn's messages
+      const session = agent.sessions.getOrCreate(sessionKey);
+      const prevLen = session.getHistory().length;
+
       const response = await agent.processDirect(
         job.payload.message,
-        `cron:${job.id}`,
-        job.payload.channel ?? "cli",
-        job.payload.to ?? "direct",
+        sessionKey,
+        "cron",
+        job.id,
       );
 
-      if (job.payload.deliver && job.payload.to) {
+      // Push the full turn (tool calls + results + final answer) to the web UI via SSE
+      if (gateway) {
+        const turnMessages = session.getHistory().slice(prevLen);
+        for (const msg of turnMessages) {
+          if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+            for (const tc of msg.tool_calls) {
+              gateway.notifyToolCall(tc.function.name, tc.function.arguments);
+            }
+            // If the assistant message also has text content, push it
+            if (msg.content) {
+              gateway.notify("assistant", typeof msg.content === "string" ? msg.content : "", "default");
+            }
+          } else if (msg.role === "tool") {
+            const content = typeof msg.content === "string" ? msg.content : "";
+            gateway.notifyToolResult(msg.name ?? "", content);
+          } else if (msg.role === "assistant") {
+            gateway.notify("assistant", typeof msg.content === "string" ? msg.content : "", "default");
+          }
+        }
+      }
+
+      // Deliver to all configured chat channels (telegram, etc.)
+      if (job.payload.deliver) {
         const { createOutboundMessage } = await import(
           "../bus/events.js"
         );
-        await bus.publishOutbound(
-          createOutboundMessage({
-            channel: job.payload.channel ?? "cli",
-            chatId: job.payload.to,
-            content: response ?? "",
-          }),
-        );
+
+        for (const channelName of channels.enabledChannels) {
+          const chatIds = channels.getKnownChatIds(channelName);
+          if (chatIds.length === 0) {
+            console.log(`Cron: no known chats for ${channelName}, skipping`);
+            continue;
+          }
+          for (const chatId of chatIds) {
+            await bus.publishOutbound(
+              createOutboundMessage({
+                channel: channelName,
+                chatId,
+                content: response ?? "",
+              }),
+            );
+          }
+        }
       }
+
       return response;
     };
 
@@ -238,17 +443,6 @@ program
       intervalS: 30 * 60,
       enabled: true,
     });
-
-    // Create channel manager
-    const channels = new ChannelManager(config, bus);
-
-    if (channels.enabledChannels.length > 0) {
-      console.log(
-        `Channels enabled: ${channels.enabledChannels.join(", ")}`,
-      );
-    } else {
-      console.log("Warning: No channels enabled");
-    }
 
     const cronStatus = cron.status();
     if (cronStatus.jobs > 0) {
@@ -268,9 +462,21 @@ program
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
 
+    // Start HTTP gateway server
+    const { createGatewayServer } = await import(
+      "../gateway/server.js"
+    );
+    gateway = createGatewayServer({
+      agent,
+      port: Number(opts.port),
+    });
+
     try {
+      // Initialise channels first (non-blocking) so enabledChannels is populated
+      await channels.init();
       await cron.start();
       await heartbeat.start();
+      // Both agent.run() and channels.startAll() block until stopped
       await Promise.all([agent.run(), channels.startAll()]);
     } catch (err) {
       console.error("Gateway error:", err);
@@ -320,6 +526,7 @@ program
       bus,
       provider,
       workspace,
+      maxTokens: config.agents.defaults.maxTokens,
       braveApiKey: config.tools.web.search.apiKey || undefined,
       execConfig: config.tools.exec,
     });
@@ -409,8 +616,8 @@ cronCmd
   .command("list")
   .description("List scheduled jobs")
   .option("-a, --all", "Include disabled jobs", false)
-  .action((opts) => {
-    const { CronService } = require("../cron/service.js") as typeof import("../cron/service.js");
+  .action(async (opts) => {
+    const { CronService } = await import("../cron/service.js");
 
     const storePath = join(getDataDir(), "cron", "jobs.json");
     const service = new CronService(storePath);
@@ -463,8 +670,8 @@ cronCmd
   .option("-d, --deliver", "Deliver response to channel", false)
   .option("--to <recipient>", "Recipient for delivery")
   .option("--channel <name>", "Channel for delivery")
-  .action((opts) => {
-    const { CronService } = require("../cron/service.js") as typeof import("../cron/service.js");
+  .action(async (opts) => {
+    const { CronService } = await import("../cron/service.js");
 
     let schedule: { kind: string; everyMs?: number; expr?: string; atMs?: number };
     if (opts.every) {
@@ -498,8 +705,8 @@ cronCmd
   .command("remove")
   .description("Remove a scheduled job")
   .argument("<jobId>", "Job ID to remove")
-  .action((jobId: string) => {
-    const { CronService } = require("../cron/service.js") as typeof import("../cron/service.js");
+  .action(async (jobId: string) => {
+    const { CronService } = await import("../cron/service.js");
 
     const storePath = join(getDataDir(), "cron", "jobs.json");
     const service = new CronService(storePath);
@@ -516,8 +723,8 @@ cronCmd
   .description("Enable or disable a job")
   .argument("<jobId>", "Job ID")
   .option("--disable", "Disable instead of enable", false)
-  .action((jobId: string, opts: { disable: boolean }) => {
-    const { CronService } = require("../cron/service.js") as typeof import("../cron/service.js");
+  .action(async (jobId: string, opts: { disable: boolean }) => {
+    const { CronService } = await import("../cron/service.js");
 
     const storePath = join(getDataDir(), "cron", "jobs.json");
     const service = new CronService(storePath);

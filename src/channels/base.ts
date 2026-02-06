@@ -11,6 +11,12 @@ export abstract class BaseChannel {
   protected bus: MessageBus;
   protected _running = false;
 
+  /** Chat IDs that have sent at least one message to this channel. */
+  readonly knownChatIds = new Set<string>();
+
+  /** Called when a new chat ID is added (set by ChannelManager for persistence). */
+  onNewChatId: (() => void) | null = null;
+
   constructor(config: unknown, bus: MessageBus) {
     this.config = config;
     this.bus = bus;
@@ -46,6 +52,13 @@ export abstract class BaseChannel {
     metadata?: Record<string, unknown>;
   }): Promise<void> {
     if (!this.isAllowed(params.senderId)) return;
+
+    // Track this chat so broadcasts (cron, etc.) can reach it later
+    const chatIdStr = String(params.chatId);
+    if (!this.knownChatIds.has(chatIdStr)) {
+      this.knownChatIds.add(chatIdStr);
+      this.onNewChatId?.();
+    }
 
     const msg = createInboundMessage({
       channel: this.name,

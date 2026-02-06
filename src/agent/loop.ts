@@ -4,7 +4,7 @@ import type {
   InboundMessage,
   OutboundMessage,
 } from "../bus/events.js";
-import { createInboundMessage, createOutboundMessage } from "../bus/events.js";
+import { createOutboundMessage } from "../bus/events.js";
 import { ContextBuilder } from "./context.js";
 import { ToolRegistry } from "./tools/registry.js";
 import {
@@ -37,6 +37,7 @@ export class AgentLoop {
   private provider: LLMProvider;
   private workspace: string;
   private model: string;
+  private maxTokens: number;
   private maxIterations: number;
 
   readonly context: ContextBuilder;
@@ -51,6 +52,7 @@ export class AgentLoop {
     provider: LLMProvider;
     workspace: string;
     model?: string;
+    maxTokens?: number;
     maxIterations?: number;
     braveApiKey?: string;
     execConfig?: ExecToolConfig;
@@ -60,6 +62,7 @@ export class AgentLoop {
     this.provider = params.provider;
     this.workspace = params.workspace;
     this.model = params.model ?? params.provider.getDefaultModel();
+    this.maxTokens = params.maxTokens ?? 8192;
     this.maxIterations = params.maxIterations ?? 20;
 
     const execConfig = params.execConfig ?? {
@@ -129,7 +132,7 @@ export class AgentLoop {
 
     while (this._running) {
       try {
-        const msg = await withTimeout(this.bus.consumeInbound(), 1000);
+        const msg = await this.bus.consumeInboundTimeout(1000);
 
         try {
           const response = await this.processMessage(msg);
@@ -184,12 +187,16 @@ export class AgentLoop {
       chatId: msg.chatId,
     });
 
-    // Agent loop
+    // The messages array is: [system, ...history, currentUser]
+    // We want to save from the current user message onward (skip system + old history).
+    const savedHistoryLen = session.getHistory().length;
+    const newMsgStart = 1 + savedHistoryLen; // 1 for system prompt
+
+    // Agent loop (mutates messages by appending assistant/tool messages)
     const finalContent = await this.runAgentLoop(messages);
 
-    // Save to session
-    session.addMessage("user", msg.content);
-    session.addMessage("assistant", finalContent);
+    // Save the new messages from this turn (user + all agent loop messages)
+    session.addTurnMessages(messages.slice(newMsgStart));
     this.sessions.save(session);
 
     return createOutboundMessage({
@@ -228,10 +235,12 @@ export class AgentLoop {
       chatId: originChatId,
     });
 
+    const savedHistoryLen = session.getHistory().length;
+    const newMsgStart = 1 + savedHistoryLen;
+
     const finalContent = await this.runAgentLoop(messages);
 
-    session.addMessage("user", `[System: ${msg.senderId}] ${msg.content}`);
-    session.addMessage("assistant", finalContent);
+    session.addTurnMessages(messages.slice(newMsgStart));
     this.sessions.save(session);
 
     return createOutboundMessage({
@@ -249,6 +258,7 @@ export class AgentLoop {
         messages,
         tools: this.tools.getDefinitions(),
         model: this.model,
+        maxTokens: this.maxTokens,
       });
 
       if (response.hasToolCalls) {
@@ -276,11 +286,20 @@ export class AgentLoop {
         }
       } else {
         finalContent = response.content;
+        // Push the final assistant message so it gets persisted with the turn
+        messages.push({ role: "assistant", content: finalContent ?? "" });
         break;
       }
     }
 
-    return finalContent ?? "I've completed processing but have no response to give.";
+    finalContent ??= "I've completed processing but have no response to give.";
+
+    // If we exhausted iterations without a non-tool-call response, still persist the final text
+    if (messages[messages.length - 1]?.role !== "assistant" || messages[messages.length - 1]?.content !== finalContent) {
+      messages.push({ role: "assistant", content: finalContent });
+    }
+
+    return finalContent;
   }
 
   private updateToolContexts(channel: string, chatId: string): void {
@@ -307,13 +326,6 @@ export class AgentLoop {
     channel = "cli",
     chatId = "direct",
   ): Promise<string> {
-    const msg = createInboundMessage({
-      channel,
-      senderId: "user",
-      chatId,
-      content,
-    });
-
     // Use inline version of processMessage for direct calls
     const session = this.sessions.getOrCreate(sessionKey);
     this.updateToolContexts(channel, chatId);
@@ -325,29 +337,15 @@ export class AgentLoop {
       chatId,
     });
 
+    const savedHistoryLen = session.getHistory().length;
+    const newMsgStart = 1 + savedHistoryLen;
+
     const finalContent = await this.runAgentLoop(messages);
 
-    session.addMessage("user", content);
-    session.addMessage("assistant", finalContent);
+    session.addTurnMessages(messages.slice(newMsgStart));
     this.sessions.save(session);
 
     return finalContent;
   }
 }
 
-/** Promise.race with a timeout. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timeout")), ms);
-    promise.then(
-      (val) => {
-        clearTimeout(timer);
-        resolve(val);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-}

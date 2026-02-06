@@ -1,4 +1,23 @@
-export const VERSION = "0.1.4";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function readVersion(): string {
+  try {
+    // Works from both src/ (dev) and dist/ (built)
+    for (const rel of ["../package.json", "../../package.json"]) {
+      try {
+        const pkg = JSON.parse(readFileSync(join(__dirname, rel), "utf-8"));
+        if (pkg.version) return pkg.version;
+      } catch { /* try next */ }
+    }
+  } catch { /* fallback */ }
+  return "0.0.0";
+}
+
+export const VERSION = readVersion();
 export const LOGO = "\u{1F408}";
 
 // Core exports

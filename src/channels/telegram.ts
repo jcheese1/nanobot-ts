@@ -93,12 +93,10 @@ export class TelegramChannel extends BaseChannel {
   readonly name = "telegram";
   private bot: Bot | null = null;
   private telegramConfig: TelegramConfig;
-  private groqApiKey: string;
 
-  constructor(config: TelegramConfig, bus: MessageBus, groqApiKey = "") {
+  constructor(config: TelegramConfig, bus: MessageBus) {
     super(config, bus);
     this.telegramConfig = config;
-    this.groqApiKey = groqApiKey;
   }
 
   async start(): Promise<void> {
@@ -125,11 +123,6 @@ export class TelegramChannel extends BaseChannel {
 
     // Handle photos
     this.bot.on("message:photo", async (ctx) => {
-      await this.onMessage(ctx);
-    });
-
-    // Handle voice
-    this.bot.on("message:voice", async (ctx) => {
       await this.onMessage(ctx);
     });
 
@@ -218,11 +211,6 @@ export class TelegramChannel extends BaseChannel {
       } catch (err) {
         contentParts.push("[image: download failed]");
       }
-    }
-
-    // Voice
-    if (message.voice) {
-      contentParts.push(`[voice: telegram file ${message.voice.file_id}]`);
     }
 
     // Documents

@@ -26,12 +26,47 @@ class AsyncQueue<T> {
     });
   }
 
+  /**
+   * Wait for an item with a timeout. On timeout, the waiter is removed
+   * from the queue so it does not consume a future item.
+   */
+  getWithTimeout(ms: number): Promise<T> {
+    const item = this.queue.shift();
+    if (item !== undefined) {
+      return Promise.resolve(item);
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+
+      const waiter = (value: T) => {
+        if (settled) {
+          // Timeout already fired — put the item back so it isn't lost
+          this.queue.unshift(value);
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+
+      this.waiters.push(waiter);
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        // Remove our waiter so it doesn't consume a future item
+        const idx = this.waiters.indexOf(waiter);
+        if (idx !== -1) this.waiters.splice(idx, 1);
+        reject(new Error("timeout"));
+      }, ms);
+    });
+  }
+
   get size(): number {
     return this.queue.length;
   }
 }
-
-type OutboundCallback = (msg: OutboundMessage) => Promise<void>;
 
 /**
  * Async message bus that decouples chat channels from the agent core.
@@ -42,8 +77,6 @@ type OutboundCallback = (msg: OutboundMessage) => Promise<void>;
 export class MessageBus {
   readonly inbound = new AsyncQueue<InboundMessage>();
   readonly outbound = new AsyncQueue<OutboundMessage>();
-  private outboundSubscribers = new Map<string, OutboundCallback[]>();
-  private _running = false;
 
   async publishInbound(msg: InboundMessage): Promise<void> {
     await this.inbound.put(msg);
@@ -51,6 +84,11 @@ export class MessageBus {
 
   async consumeInbound(): Promise<InboundMessage> {
     return this.inbound.get();
+  }
+
+  /** Consume with timeout — safely removes the waiter on timeout so no messages are lost. */
+  consumeInboundTimeout(ms: number): Promise<InboundMessage> {
+    return this.inbound.getWithTimeout(ms);
   }
 
   async publishOutbound(msg: OutboundMessage): Promise<void> {
@@ -61,33 +99,9 @@ export class MessageBus {
     return this.outbound.get();
   }
 
-  subscribeOutbound(channel: string, callback: OutboundCallback): void {
-    const subs = this.outboundSubscribers.get(channel) ?? [];
-    subs.push(callback);
-    this.outboundSubscribers.set(channel, subs);
-  }
-
-  async dispatchOutbound(): Promise<void> {
-    this._running = true;
-    while (this._running) {
-      try {
-        const msg = await withTimeout(this.outbound.get(), 1000);
-        const subscribers = this.outboundSubscribers.get(msg.channel) ?? [];
-        for (const callback of subscribers) {
-          try {
-            await callback(msg);
-          } catch (err) {
-            console.error(`Error dispatching to ${msg.channel}:`, err);
-          }
-        }
-      } catch {
-        // timeout, continue loop
-      }
-    }
-  }
-
-  stop(): void {
-    this._running = false;
+  /** Consume with timeout — safely removes the waiter on timeout so no messages are lost. */
+  consumeOutboundTimeout(ms: number): Promise<OutboundMessage> {
+    return this.outbound.getWithTimeout(ms);
   }
 
   get inboundSize(): number {
@@ -99,19 +113,3 @@ export class MessageBus {
   }
 }
 
-/** Promise.race with a timeout. Rejects on timeout. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timeout")), ms);
-    promise.then(
-      (val) => {
-        clearTimeout(timer);
-        resolve(val);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-}

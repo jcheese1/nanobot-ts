@@ -1,6 +1,6 @@
 {
   "name": "@jcheesepkg/nanobot",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Lightweight AI assistant - TypeScript port",
   "type": "module",
   "main": "dist/index.mjs",
@@ -21,9 +21,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hono/node-server": "^1.19.9",
     "commander": "^12.1.0",
     "cron-parser": "^4.9.0",
     "grammy": "^1.30.0",
+    "hono": "^4.11.7",
     "openai": "^4.73.0",
     "zod": "^3.23.0"
   },

@@ -51,6 +51,7 @@ export interface LLMProvider {
     messages: ChatMessage[];
     tools?: ToolDefinition[];
     model?: string;
+    maxTokens?: number;
   }): Promise<LLMResponse>;
 
   /** Get the default model name. */

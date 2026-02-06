@@ -58,7 +58,7 @@ export const ProvidersConfigSchema = z.object({
 export type ProvidersConfig = z.infer<typeof ProvidersConfigSchema>;
 
 export const GatewayConfigSchema = z.object({
-  host: z.string().default("0.0.0.0"),
+  host: z.string().default("127.0.0.1"),
   port: z.number().default(18790),
 });
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>;
@@ -110,7 +110,7 @@ export const ConfigSchema = z.object({
     gemini: defaultProvider,
     openaiCompatible: defaultProvider,
   }),
-  gateway: GatewayConfigSchema.default({ host: "0.0.0.0", port: 18790 }),
+  gateway: GatewayConfigSchema.default({ host: "127.0.0.1", port: 18790 }),
   tools: ToolsConfigSchema.default({
     web: { search: { apiKey: "", maxResults: 5 } },
     exec: { timeout: 60, restrictToWorkspace: false },
