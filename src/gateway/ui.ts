@@ -208,6 +208,17 @@ async function send() {
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     thinkingEl.remove();
+    // Render tool calls and results from this turn before the final response
+    if (data.turn) {
+      for (const step of data.turn) {
+        if (step.type === "tool_call") {
+          addToolCall(step.name, step.arguments);
+        } else if (step.type === "tool_result") {
+          addToolResult(step.name, step.output);
+        }
+        // Skip "text" entries — we render the final response below
+      }
+    }
     addMessage(data.response, "bot");
   } catch (err) {
     thinkingEl.remove();

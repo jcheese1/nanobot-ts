@@ -136,11 +136,30 @@ export class TelegramChannel extends BaseChannel {
     const me = await this.bot.api.getMe();
     console.log(`Telegram bot @${me.username} connected`);
 
-    // Start polling (this blocks until stopped)
-    await this.bot.start({
-      drop_pending_updates: true,
-      allowed_updates: ["message"],
-    });
+    // Start polling with retry — handles 409 Conflict when a stale
+    // instance is still holding the long-poll connection.
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.bot.start({
+          drop_pending_updates: true,
+          allowed_updates: ["message"],
+        });
+        return; // bot.start() blocks until stopped, so if we get here it was a clean stop
+      } catch (err) {
+        const is409 =
+          err instanceof Error && err.message.includes("409");
+        if (is409 && attempt < maxRetries && this._running) {
+          const delay = attempt * 5;
+          console.warn(
+            `Telegram 409 conflict (attempt ${attempt}/${maxRetries}), retrying in ${delay}s...`,
+          );
+          await new Promise((r) => setTimeout(r, delay * 1000));
+          continue;
+        }
+        throw err;
+      }
+    }
   }
 
   async stop(): Promise<void> {

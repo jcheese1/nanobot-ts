@@ -65,13 +65,41 @@ export function createGatewayServer(opts: GatewayServerOptions): GatewayServer {
     const sessionKey = body.session ?? "web:default";
 
     try {
+      // Snapshot history so we can extract this turn's messages
+      const session = agent.sessions.getOrCreate(sessionKey);
+      const prevLen = session.getHistory().length;
+
       const response = await agent.processDirect(
         message,
         sessionKey,
         "web",
         "default",
       );
-      return c.json({ response });
+
+      // Build turn array: tool calls, tool results, and the final response
+      const turn: Array<{
+        type: "tool_call" | "tool_result" | "text";
+        name?: string;
+        arguments?: string;
+        output?: string;
+        content?: string;
+      }> = [];
+
+      const turnMessages = session.getHistory().slice(prevLen);
+      for (const msg of turnMessages) {
+        if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+          for (const tc of msg.tool_calls) {
+            turn.push({ type: "tool_call", name: tc.function.name, arguments: tc.function.arguments });
+          }
+        } else if (msg.role === "tool") {
+          const content = typeof msg.content === "string" ? msg.content : "";
+          turn.push({ type: "tool_result", name: msg.name ?? "", output: content });
+        } else if (msg.role === "assistant" && msg.content) {
+          turn.push({ type: "text", content: typeof msg.content === "string" ? msg.content : "" });
+        }
+      }
+
+      return c.json({ response, turn });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error("Chat error:", errMsg);

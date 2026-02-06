@@ -117,6 +117,7 @@ export class WebSearchTool extends Tool {
       const resp = await fetch(url.toString(), {
         headers: {
           Accept: "application/json",
+          "Accept-Encoding": "gzip",
           "X-Subscription-Token": this.apiKey,
         },
         signal: AbortSignal.timeout(10000),
