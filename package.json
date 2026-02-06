@@ -1,0 +1,45 @@
+{
+  "name": "@jcheesepkg/nanobot",
+  "version": "0.1.4",
+  "description": "Lightweight AI assistant - TypeScript port",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "bin": {
+    "nanobot": "dist/cli/index.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsx src/cli/index.ts",
+    "start": "node dist/cli/index.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "cron-parser": "^4.9.0",
+    "grammy": "^1.30.0",
+    "openai": "^4.73.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.20.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "workspace"
+  ],
+  "license": "MIT"
+}
