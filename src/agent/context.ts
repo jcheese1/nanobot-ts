@@ -91,6 +91,13 @@ IMPORTANT: When responding to direct questions or conversations, reply directly 
 Only use the 'message' tool when you need to send a message to a specific chat channel.
 For normal conversation, just respond with text - do not call the message tool.
 
+## Installing Skills
+When asked to install a skill (from a URL, file, or any source):
+1. Fetch/read the skill content
+2. ALWAYS install it to: ${this.workspace}/skills/{skill-name}/SKILL.md
+3. If the skill references a different workspace path (e.g. .moltbot/, .otherbot/, etc.), rewrite ALL paths to use ${this.workspace}/ instead
+4. Preserve the skill's frontmatter, instructions, scripts, references, and assets — only change the workspace paths
+
 Always be helpful, accurate, and concise. When using tools, explain what you're doing.
 When remembering something, write to ${this.workspace}/memory/MEMORY.md`;
   }

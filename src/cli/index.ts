@@ -103,6 +103,13 @@ Information about the user goes here.
 - Timezone: (your timezone)
 - Language: (your preferred language)
 `,
+    "HEARTBEAT.md": `# Heartbeat
+
+This file is checked every 30 minutes. Add tasks or instructions below and the agent will act on them automatically.
+
+## Tasks
+
+`,
   };
 
   for (const [filename, content] of Object.entries(templates)) {
