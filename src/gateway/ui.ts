@@ -4,7 +4,7 @@ export function getControlHtml(): string {
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 <title>nanobot</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

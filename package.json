@@ -1,6 +1,6 @@
 {
   "name": "@jcheesepkg/nanobot",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Lightweight AI assistant - TypeScript port",
   "type": "module",
   "main": "dist/index.mjs",
