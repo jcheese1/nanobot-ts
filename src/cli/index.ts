@@ -5,7 +5,8 @@
 
 import { Command } from "commander";
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve, isAbsolute } from "node:path";
+import { pathToFileURL } from "node:url";
 import { VERSION, LOGO } from "../index.js";
 import { loadConfig, saveConfig } from "../config/loader.js";
 import { getConfigPath, getDataDir } from "../config/loader.js";
@@ -16,9 +17,61 @@ import {
   getApiBase,
 } from "../config/schema.js";
 import type { Config } from "../config/schema.js";
+import type { Tool } from "../agent/tools/base.js";
 import { GatewayServer } from "../gateway/server.js";
 
 const program = new Command();
+
+async function loadCustomTools(config: Config): Promise<Tool[]> {
+  const customConfigs = config.tools.custom ?? [];
+  if (customConfigs.length === 0) return [];
+
+  const tools: Tool[] = [];
+  for (const entry of customConfigs) {
+    try {
+      const modulePath = isAbsolute(entry.module)
+        ? entry.module
+        : resolve(process.cwd(), entry.module);
+      const mod = await import(pathToFileURL(modulePath).href);
+      const exportName = entry.export ?? "default";
+      const exported = exportName === "default" ? mod.default : mod[exportName];
+
+      if (!exported) {
+        throw new Error(`Export '${exportName}' not found`);
+      }
+
+      let instance: unknown;
+      if (typeof exported === "function") {
+        try {
+          instance = new exported(entry.options ?? {});
+        } catch {
+          instance = exported(entry.options ?? {});
+        }
+      } else {
+        throw new Error(`Export '${exportName}' is not a function`);
+      }
+
+      if (
+        instance &&
+        typeof instance === "object" &&
+        "execute" in instance &&
+        "name" in instance
+      ) {
+        tools.push(instance as Tool);
+      } else {
+        throw new Error(`Export '${exportName}' did not return a Tool instance`);
+      }
+    } catch (err) {
+      console.warn(
+        `Warning: Failed to load custom tool '${entry.module}': ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  return tools;
+}
 
 program
   .name("nanobot")
@@ -357,6 +410,8 @@ program
       defaultModel: model,
     });
 
+    const customTools = await loadCustomTools(config);
+
     // Create cron service
     const cronStorePath = join(getDataDir(), "cron", "jobs.json");
     const cron = new CronService(cronStorePath);
@@ -372,6 +427,9 @@ program
       braveApiKey: config.tools.web.search.apiKey || undefined,
       execConfig: config.tools.exec,
       cronService: cron,
+      toolsEnabled: config.tools.enabled,
+      toolsDisabled: config.tools.disabled,
+      customTools,
     });
 
     // Create channel manager (before cron so the callback can broadcast)
@@ -529,6 +587,8 @@ program
       defaultModel: config.agents.defaults.model,
     });
 
+    const customTools = await loadCustomTools(config);
+
     const agentLoop = new AgentLoop({
       bus,
       provider,
@@ -536,6 +596,9 @@ program
       maxTokens: config.agents.defaults.maxTokens,
       braveApiKey: config.tools.web.search.apiKey || undefined,
       execConfig: config.tools.exec,
+      toolsEnabled: config.tools.enabled,
+      toolsDisabled: config.tools.disabled,
+      customTools,
     });
 
     if (opts.message) {

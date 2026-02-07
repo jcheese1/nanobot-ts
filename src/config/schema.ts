@@ -78,6 +78,13 @@ export const ExecToolConfigSchema = z.object({
 });
 export type ExecToolConfig = z.infer<typeof ExecToolConfigSchema>;
 
+export const CustomToolConfigSchema = z.object({
+  module: z.string(),
+  export: z.string().optional(),
+  options: z.record(z.unknown()).optional(),
+});
+export type CustomToolConfig = z.infer<typeof CustomToolConfigSchema>;
+
 export const ToolsConfigSchema = z.object({
   web: WebToolsConfigSchema.default({
     search: { apiKey: "", maxResults: 5 },
@@ -86,6 +93,9 @@ export const ToolsConfigSchema = z.object({
     timeout: 60,
     restrictToWorkspace: false,
   }),
+  enabled: z.array(z.string()).optional(),
+  disabled: z.array(z.string()).optional(),
+  custom: z.array(CustomToolConfigSchema).optional(),
 });
 
 export const ConfigSchema = z.object({

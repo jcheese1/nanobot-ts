@@ -21,6 +21,7 @@ import { CronTool } from "./tools/cron.js";
 import { SubagentManager } from "./subagent.js";
 import { SessionManager } from "../session/manager.js";
 import type { ExecToolConfig } from "../config/schema.js";
+import type { Tool } from "./tools/base.js";
 import type { CronService } from "../cron/service.js";
 
 /**
@@ -57,6 +58,9 @@ export class AgentLoop {
     braveApiKey?: string;
     execConfig?: ExecToolConfig;
     cronService?: CronService;
+    toolsEnabled?: string[];
+    toolsDisabled?: string[];
+    customTools?: Tool[];
   }) {
     this.bus = params.bus;
     this.provider = params.provider;
@@ -82,22 +86,44 @@ export class AgentLoop {
       execConfig,
     });
 
-    this.registerDefaultTools(execConfig, params.braveApiKey, params.cronService);
+    this.registerDefaultTools(
+      execConfig,
+      params.braveApiKey,
+      params.cronService,
+      params.toolsEnabled,
+      params.toolsDisabled,
+      params.customTools,
+    );
   }
 
   private registerDefaultTools(
     execConfig: ExecToolConfig,
     braveApiKey?: string,
     cronService?: CronService,
+    toolsEnabled?: string[],
+    toolsDisabled?: string[],
+    customTools?: Tool[],
   ): void {
+    const enabled = new Set(toolsEnabled ?? []);
+    const disabled = new Set(toolsDisabled ?? []);
+    const hasAllowlist = enabled.size > 0;
+    const shouldRegister = (name: string): boolean =>
+      (hasAllowlist ? enabled.has(name) : true) && !disabled.has(name);
+
+    const registerIfEnabled = (tool: Tool): void => {
+      if (shouldRegister(tool.name)) {
+        this.tools.register(tool);
+      }
+    };
+
     // File tools
-    this.tools.register(new ReadFileTool());
-    this.tools.register(new WriteFileTool());
-    this.tools.register(new EditFileTool());
-    this.tools.register(new ListDirTool());
+    registerIfEnabled(new ReadFileTool());
+    registerIfEnabled(new WriteFileTool());
+    registerIfEnabled(new EditFileTool());
+    registerIfEnabled(new ListDirTool());
 
     // Shell tool
-    this.tools.register(
+    registerIfEnabled(
       new ExecTool({
         workingDir: this.workspace,
         timeout: execConfig.timeout,
@@ -106,22 +132,28 @@ export class AgentLoop {
     );
 
     // Web tools
-    this.tools.register(new WebSearchTool({ apiKey: braveApiKey }));
-    this.tools.register(new WebFetchTool());
+    registerIfEnabled(new WebSearchTool({ apiKey: braveApiKey }));
+    registerIfEnabled(new WebFetchTool());
 
     // Message tool
     const messageTool = new MessageTool({
       sendCallback: (msg) => this.bus.publishOutbound(msg),
     });
-    this.tools.register(messageTool);
+    registerIfEnabled(messageTool);
 
     // Spawn tool
     const spawnTool = new SpawnTool(this.subagents);
-    this.tools.register(spawnTool);
+    registerIfEnabled(spawnTool);
 
     // Cron tool
     if (cronService) {
-      this.tools.register(new CronTool(cronService));
+      registerIfEnabled(new CronTool(cronService));
+    }
+
+    if (customTools && customTools.length > 0) {
+      for (const tool of customTools) {
+        registerIfEnabled(tool);
+      }
     }
   }
 
@@ -348,4 +380,3 @@ export class AgentLoop {
     return finalContent;
   }
 }
-
